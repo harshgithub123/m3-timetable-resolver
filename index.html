@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>M3 – Timetable Clash Resolver</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen p-6">
+  <div class="max-w-5xl mx-auto space-y-6">
+    <div class="flex items-center justify-between border-b border-slate-800 pb-4">
+      <div>
+        <h1 class="text-2xl font-bold text-emerald-400">Timetable Clash Resolver (M3)</h1>
+        <p class="text-sm text-slate-400">Upload JSON dataset (big.json, bad_capacity.json, bad_faculty.json, bad_student.json)</p>
+      </div>
+    </div>
+
+    <div class="bg-slate-900 p-5 rounded-xl border border-slate-800 flex items-center gap-4">
+      <input id="fileInput" type="file" accept=".json" class="text-sm text-slate-300" />
+      <button onclick="runSolver()" class="bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-semibold px-5 py-2 rounded-lg">
+        Generate Timetable
+      </button>
+      <span id="status" class="text-sm text-amber-400"></span>
+    </div>
+
+    <div id="result" class="space-y-4"></div>
+  </div>
+
+  <script>
+    const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+    async function runSolver() {
+      const file = document.getElementById("fileInput").files[0];
+      if (!file) return alert("Pehle JSON file select karein!");
+      const status = document.getElementById("status");
+      const resultDiv = document.getElementById("result");
+      status.textContent = "Solving...";
+      resultDiv.innerHTML = "";
+
+      const form = new FormData();
+      form.append("file", file);
+
+      const res = await fetch("/api/solve", { method: "POST", body: form });
+      const data = await res.json();
+      status.textContent = `Done in ${data.runtime_s}s`;
+
+      if (!data.feasible) {
+        resultDiv.innerHTML = `
+          <div class="bg-red-950/60 border border-red-700 p-5 rounded-xl space-y-3">
+            <h2 class="text-lg font-bold text-red-400">Infeasible Timetable — Conflict Report</h2>
+            <p class="text-sm"><b>Conflicting Sections:</b> ${data.conflicting_sections.join(", ") || "N/A"}</p>
+            <ul class="list-disc pl-5 space-y-1 text-sm text-red-200">
+              ${data.conflicting_constraints.map(c => `<li><b>[${c.type}]</b> ${c.description}</li>`).join("")}
+            </ul>
+          </div>`;
+        return;
+      }
+
+      const rows = data.schedule.slice(0, 100).map(s => `
+        <tr class="border-t border-slate-800">
+          <td class="p-2">${DAYS[s.day] || s.day}</td>
+          <td class="p-2">P${s.period + 1}</td>
+          <td class="p-2 font-mono text-emerald-300">${s.section}</td>
+          <td class="p-2">${s.course}</td>
+          <td class="p-2">${s.faculty}</td>
+          <td class="p-2">${s.room}</td>
+          <td class="p-2">${s.enrolled_count}</td>
+        </tr>`).join("");
+
+      resultDiv.innerHTML = `
+        <div class="bg-emerald-950/40 border border-emerald-700 p-4 rounded-xl flex gap-6 text-sm">
+          <span><b>Status:</b> Feasible</span>
+          <span><b>Lectures Scheduled:</b> ${data.total_lectures}</span>
+          <span><b>Lunch Violations:</b> ${data.lunch_violations}</span>
+          <span><b>Runtime:</b> ${data.runtime_s}s</span>
+        </div>
+        <div class="overflow-x-auto bg-slate-900 rounded-xl border border-slate-800">
+          <table class="w-full text-left text-sm">
+            <thead class="bg-slate-800 text-slate-300">
+              <tr>
+                <th class="p-2">Day</th><th class="p-2">Period</th><th class="p-2">Section</th>
+                <th class="p-2">Course</th><th class="p-2">Faculty</th><th class="p-2">Room</th><th class="p-2">Students</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>`;
+    }
+  </script>
+</body>
+</html>
