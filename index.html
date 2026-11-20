@@ -401,7 +401,7 @@
         const formData = new FormData();
         formData.append('file', selectedFile);
 
-        const res = await fetch('/solve', {
+        const res = await fetch('/api/solve', {
           method: 'POST',
           body: formData
         });
