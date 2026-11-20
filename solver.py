@@ -96,3 +96,127 @@ def solve_timetable(data, time_limit_s=50.0):
     all_slots = [(d, p) for d in range(days) for p in range(periods)]
 
     x = {}
+    for i, sec in enumerate(sections):
+        f_block = unavail.get(sec["faculty"], set())
+        for d, p in all_slots:
+            if (d, p) not in f_block:
+                x[i, d, p] = model.NewBoolVar(f"x_{i}_{d}_{p}")
+
+    for i, sec in enumerate(sections):
+        vars_sec = [x[i, d, p] for d, p in all_slots if (i, d, p) in x]
+        model.Add(sum(vars_sec) == sec["sessions"])
+        for d in range(days):
+            day_vars = [x[i, d, p] for p in range(periods) if (i, d, p) in x]
+            if day_vars:
+                model.Add(sum(day_vars) <= 1)
+
+    fac_map = defaultdict(list)
+    for i, sec in enumerate(sections):
+        fac_map[sec["faculty"]].append(i)
+
+    for fac, sec_idxs in fac_map.items():
+        if len(sec_idxs) > 1:
+            for d, p in all_slots:
+                v = [x[i, d, p] for i in sec_idxs if (i, d, p) in x]
+                if len(v) > 1:
+                    model.Add(sum(v) <= 1)
+
+    stu_map = defaultdict(list)
+    for i, sec in enumerate(sections):
+        for st in sec["enrolled"]:
+            stu_map[st].append(i)
+
+    unique_groups = {tuple(sorted(v)) for v in stu_map.values() if len(v) > 1}
+    for grp in unique_groups:
+        for d, p in all_slots:
+            v = [x[i, d, p] for i in grp if (i, d, p) in x]
+            if len(v) > 1:
+                model.Add(sum(v) <= 1)
+
+    cap_levels = sorted({r["capacity"] for r in rooms})
+    for idx, cap in enumerate(cap_levels):
+        prev_cap = cap_levels[idx - 1] if idx > 0 else 0
+        rooms_ge = sum(1 for r in rooms if r["capacity"] >= cap)
+        need_ge = [i for i, s in enumerate(sections) if len(s["enrolled"]) > prev_cap]
+        if len(need_ge) > rooms_ge:
+            for d, p in all_slots:
+                v = [x[i, d, p] for i in need_ge if (i, d, p) in x]
+                if len(v) > rooms_ge:
+                    model.Add(sum(v) <= rooms_ge)
+
+    for d, p in all_slots:
+        v = [x[i, d, p] for i in range(len(sections)) if (i, d, p) in x]
+        if len(v) > len(rooms):
+            model.Add(sum(v) <= len(rooms))
+
+    penalties = []
+    for i in range(len(sections)):
+        for d in range(days):
+            if (i, d, lunch_p) in x:
+                penalties.append(x[i, d, lunch_p] * 5)
+
+    for fac, sec_idxs in fac_map.items():
+        for d in range(days):
+            for start_p in range(periods - max_consec):
+                window = [
+                    x[i, d, p]
+                    for i in sec_idxs
+                    for p in range(start_p, start_p + max_consec + 1)
+                    if (i, d, p) in x
+                ]
+                if len(window) > max_consec:
+                    over = model.NewBoolVar(f"consec_{fac}_{d}_{start_p}")
+                    model.Add(sum(window) <= max_consec + over * len(window))
+                    penalties.append(over * 2)
+
+    if penalties:
+        model.Minimize(sum(penalties))
+
+    solver = cp_model.CpSolver()
+    solver.parameters.max_time_in_seconds = time_limit_s
+    solver.parameters.num_search_workers = 2
+    status = solver.Solve(model)
+    elapsed = round(time.time() - t0, 2)
+
+    if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        schedule = []
+        lunch_violations = 0
+        for d, p in all_slots:
+            active = [i for i in range(len(sections)) if (i, d, p) in x and solver.Value(x[i, d, p]) == 1]
+            active.sort(key=lambda i: len(sections[i]["enrolled"]), reverse=True)
+            avail_rooms = list(rooms)
+            for i in active:
+                sec = sections[i]
+                size = len(sec["enrolled"])
+                chosen_room = next((r for r in avail_rooms if r["capacity"] >= size), None)
+                if chosen_room:
+                    avail_rooms.remove(chosen_room)
+                if p == lunch_p:
+                    lunch_violations += 1
+                schedule.append({
+                    "day": d,
+                    "period": p,
+                    "section": sec["id"],
+                    "course": sec["course"],
+                    "faculty": sec["faculty"],
+                    "room": chosen_room["id"] if chosen_room else "UNASSIGNED",
+                    "enrolled_count": size
+                })
+
+        return {
+            "feasible": True,
+            "runtime_s": elapsed,
+            "total_lectures": len(schedule),
+            "lunch_violations": lunch_violations,
+            "schedule": schedule
+        }
+
+    return {
+        "feasible": False,
+        "runtime_s": elapsed,
+        "conflicting_sections": [],
+        "conflicting_constraints": [{
+            "type": "global_infeasible",
+            "description": "No clash-free timetable exists under current hard constraints."
+        }]
+    }
